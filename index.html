@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>BioSnap - Cámara Trampa para Aves</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- TensorFlow.js y modelo COCO-SSD -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap');
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: #090d16;
+      color: #f3f4f6;
+    }
+    .font-mono-code {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    @keyframes flashAnimation {
+      0% { opacity: 0.95; }
+      100% { opacity: 0; }
+    }
+    .flash-active {
+      animation: flashAnimation 0.35s ease-out forwards;
+    }
+    .custom-scroll::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.6);
+      border-radius: 9999px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: rgba(51, 65, 85, 0.8);
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased selection:bg-emerald-500 selection:text-slate-950 pb-8">
+
+  <!-- BARRA SUPERIOR -->
+  <header class="border-b border-slate-800/80 bg-[#0d1322]/90 backdrop-blur-md sticky top-0 z-40 px-4 py-3">
+    <div class="max-w-xl mx-auto flex items-center justify-between gap-2">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/40 flex items-center justify-center shadow-lg shadow-emerald-500/10 text-emerald-400">
+          <i data-lucide="crosshair" class="w-5 h-5"></i>
+        </div>
+        <h1 class="text-xl font-extrabold tracking-tight text-white">BioSnap</h1>
+      </div>
+      <div class="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold uppercase tracking-wider text-center leading-tight">
+        CÁMARA<br>TRAMPA
+      </div>
+    </div>
+  </header>
+
+  <!-- CONTENIDO PRINCIPAL -->
+  <main class="max-w-xl mx-auto w-full p-3 space-y-3.5 flex-1">
+    
+    <!-- VISOR DE CÁMARA (Limpio, sin carteles de IA ni Estado de trampa) -->
+    <div class="relative bg-black border border-slate-800 rounded-2xl overflow-hidden aspect-[4/3] shadow-2xl flex items-center justify-center">
+
+      <!-- Contenedor con soporte de Zoom -->
+      <div id="zoomWrapper" class="w-full h-full relative overflow-hidden flex items-center justify-center">
+        <video id="videoElement" autoplay playsinline muted class="w-full h-full object-cover origin-center transition-transform duration-150"></video>
+        <canvas id="hudCanvas" class="absolute inset-0 w-full h-full object-cover pointer-events-none"></canvas>
+      </div>
+
+      <!-- Efecto Flash -->
+      <div id="flashEffect" class="absolute inset-0 bg-white pointer-events-none opacity-0 z-20"></div>
+
+      <!-- Alerta de Pájaro en Rango -->
+      <div id="birdTargetAlert" class="absolute bottom-3 left-3 hidden items-center gap-1.5 bg-emerald-500 text-slate-950 font-extrabold px-3 py-1 rounded-full shadow-lg text-xs z-10">
+        <i data-lucide="feather" class="w-3.5 h-3.5"></i>
+        <span>¡AVE EN RANGO!</span>
+      </div>
+
+      <!-- Indicador de Espera (Cooldown) -->
+      <div id="cooldownBadge" class="absolute bottom-3 right-3 hidden items-center gap-1.5 bg-slate-900/90 backdrop-blur-md px-3 py-1 rounded-full border border-amber-500/40 text-xs font-bold text-amber-300 z-10">
+        <i data-lucide="timer" class="w-3.5 h-3.5 animate-spin"></i>
+        <span id="cooldownTimerText">Espera: 4s</span>
+      </div>
+
+      <!-- Pantalla de Bienvenida / Permiso inicial -->
+      <div id="welcomeScreen" class="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center p-5 text-center z-30 transition-opacity duration-300">
+        <p class="text-xs sm:text-sm text-slate-300 max-w-xs mb-5 leading-relaxed">
+          Apunta la cámara a tu comedero, nido o rama. El sistema analizará el video cuadro a cuadro y tomará fotos automáticamente.
+        </p>
+        <button id="btnLaunch" disabled class="px-5 py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm transition-all flex items-center gap-2 shadow-xl shadow-emerald-500/20 disabled:opacity-40 cursor-pointer">
+          <i data-lucide="power" class="w-4 h-4"></i>
+          <span id="btnLaunchText">Cargando IA...</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- PANEL DE CONTROLES PRINCIPALES Y SELECTORES (LENTES 123, ZOOM Z Y CÁMARA) -->
+    <div class="bg-[#111827] border border-slate-800 p-3.5 rounded-2xl space-y-3.5 shadow-lg">
+      
+      <!-- Fila de botones principales -->
+      <div class="flex items-center gap-2">
+        <button id="btnTrapSwitch" class="flex-1 py-3 px-3 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition shadow-md bg-emerald-500 text-slate-950 cursor-pointer">
+          <i data-lucide="shield-check" class="w-4 h-4"></i>
+          <span id="trapBtnLabel">Trampa Armada</span>
+        </button>
+
+        <button id="btnSnapManual" class="py-3 px-3.5 rounded-xl font-semibold text-xs sm:text-sm flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition cursor-pointer">
+          <i data-lucide="camera" class="w-4 h-4 text-emerald-400"></i>
+          <span>Foto Manual</span>
+        </button>
+
+        <button id="btnCameraFlip" class="p-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center justify-center cursor-pointer" title="Alternar lente trasero">
+          <i data-lucide="switch-camera" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- SECCIÓN SOLICITADA: LENTES 123 Y ZOOM CON Z -->
+      <div class="pt-2.5 border-t border-slate-800/80 space-y-3">
+        
+        <!-- Tecla 1 2 3 de selección de cámara (izquierda a derecha) -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-slate-300 font-semibold flex items-center gap-1.5">
+              <i data-lucide="aperture" class="w-3.5 h-3.5 text-emerald-400"></i>
+              Selección de Lente (1, 2, 3):
+            </span>
+            <span id="activeLensIndicator" class="text-emerald-400 font-bold font-mono-code text-[11px]">Lente 1</span>
+          </div>
+          <!-- Botones 1, 2, 3 distribuidos horizontalmente -->
+          <div id="lens123Container" class="grid grid-cols-3 gap-2">
+            <button type="button" data-lens-idx="0" class="lens-123-btn py-2.5 px-2 rounded-xl text-xs font-bold bg-emerald-500 text-slate-950 shadow transition cursor-pointer text-center">1</button>
+            <button type="button" data-lens-idx="1" class="lens-123-btn py-2.5 px-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer text-center">2</button>
+            <button type="button" data-lens-idx="2" class="lens-123-btn py-2.5 px-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer text-center">3</button>
+          </div>
+        </div>
+
+        <!-- Controles de Zoom con 'Z' y raya deslizante -->
+        <div class="space-y-1.5 pt-1">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-slate-300 font-semibold flex items-center gap-1.5">
+              <span class="w-5 h-5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 font-mono-code text-xs font-extrabold flex items-center justify-center">Z</span>
+              <span>Zoom Óptico / Digital:</span>
+            </span>
+            <span id="labelZoom" class="text-emerald-400 font-bold font-mono-code text-xs">1.0x</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <input id="sliderZoom" type="range" min="1" max="5" step="0.1" value="1" class="flex-1 accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer">
+            <div class="flex items-center gap-1">
+              <button type="button" data-zoom="1" class="zoom-quick px-2 py-1 rounded text-[11px] font-bold bg-slate-800 text-slate-300 border border-slate-700 cursor-pointer">1x</button>
+              <button type="button" data-zoom="2" class="zoom-quick px-2 py-1 rounded text-[11px] font-bold bg-slate-800 text-slate-300 border border-slate-700 cursor-pointer">2x</button>
+              <button type="button" data-zoom="3" class="zoom-quick px-2 py-1 rounded text-[11px] font-bold bg-slate-800 text-slate-300 border border-slate-700 cursor-pointer">3x</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Estadísticas de Capturas y FPS -->
+      <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs font-semibold text-slate-400 px-1">
+        <div class="flex items-center gap-1.5">
+          <i data-lucide="images" class="w-4 h-4 text-emerald-400"></i>
+          <span>Capturas: <strong id="totalSnapsText" class="text-white">0</strong></span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <i data-lucide="activity" class="w-4 h-4 text-cyan-400"></i>
+          <span>FPS: <strong id="fpsText" class="text-white">0</strong></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CALIBRACIÓN DE DISPARO INTELIGENTE -->
+    <div class="bg-[#111827] border border-slate-800 rounded-2xl p-4 space-y-4 shadow-lg">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-bold text-slate-100">Calibración de Disparo Inteligente</h3>
+        <span class="text-[11px] font-mono-code text-cyan-400 bg-slate-800/90 px-2 py-0.5 rounded border border-slate-700">Filtro: class 'bird'</span>
+      </div>
+
+      <!-- 1. Certeza Mínima -->
+      <div class="space-y-1">
+        <div class="flex justify-between text-xs">
+          <label class="text-slate-300 font-medium">Certeza Mínima (Score)</label>
+          <span id="labelScore" class="text-emerald-400 font-bold font-mono-code">60%</span>
+        </div>
+        <input id="sliderScore" type="range" min="30" max="90" value="60" step="5" class="w-full accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer">
+        <p class="text-[11px] text-slate-400">Exige mayor probabilidad para evitar falsos positivos con hojas o sombras.</p>
+      </div>
+
+      <!-- 2. Proximidad / Tamaño optimizado para 1/10 de pantalla (1%) -->
+      <div class="space-y-1">
+        <div class="flex justify-between text-xs">
+          <label class="text-slate-300 font-medium">Proximidad / Tamaño mín. (1/10 de pantalla)</label>
+          <span id="labelSize" class="text-emerald-400 font-bold font-mono-code">1% pantalla</span>
+        </div>
+        <!-- Mínimo bajado a 1% para que reconozca pájaros pequeños o lejanos que ocupen un décimo -->
+        <input id="sliderSize" type="range" min="0.5" max="15" value="1" step="0.5" class="w-full accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer">
+        <p class="text-[11px] text-slate-400">Ajustado al 1% para reconocer aves de cerca y también a distancia que ocupen una fracción pequeña.</p>
+      </div>
+
+      <!-- 3. Espera entre Fotos -->
+      <div class="space-y-1">
+        <div class="flex justify-between text-xs">
+          <label class="text-slate-300 font-medium">Espera entre Fotos</label>
+          <span id="labelCooldown" class="text-emerald-400 font-bold font-mono-code">4 segundos</span>
+        </div>
+        <input id="sliderCooldown" type="range" min="1" max="15" value="4" step="1" class="w-full accent-emerald-500 h-2 bg-slate-800 rounded-lg cursor-pointer">
+        <p class="text-[11px] text-slate-400">Evita ráfagas repetidas mientras el ave se alimenta tranquilamente.</p>
+      </div>
+
+      <!-- Opciones extra -->
+      <div class="pt-3 border-t border-slate-800 space-y-2.5 text-xs">
+        <label class="flex items-center gap-2.5 cursor-pointer text-slate-200 select-none">
+          <input id="chkAudio" type="checkbox" checked class="w-4 h-4 rounded accent-emerald-500 bg-slate-800 border-slate-700">
+          <span>Sonido mecánico de obturador</span>
+        </label>
+        <label class="flex items-center gap-2.5 cursor-pointer text-slate-200 select-none">
+          <input id="chkBoxes" type="checkbox" checked class="w-4 h-4 rounded accent-emerald-500 bg-slate-800 border-slate-700">
+          <span>Mostrar cajas de seguimiento en video</span>
+        </label>
+        <label class="flex items-center gap-2.5 cursor-pointer text-slate-200 select-none">
+          <input id="chkTimestamp" type="checkbox" checked class="w-4 h-4 rounded accent-emerald-500 bg-slate-800 border-slate-700">
+          <span>Grabar fecha y hora en la imagen</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- GALERÍA DE CAPTURAS DE CAMPO (UBICADA AL FINAL COMO PEDISTE) -->
+    <div class="bg-[#111827] border border-emerald-500/30 rounded-2xl p-4 flex flex-col shadow-lg space-y-3">
+      <div class="flex items-center justify-between pb-2.5 border-b border-slate-800">
+        <div class="flex items-center gap-2">
+          <i data-lucide="camera" class="w-4 h-4 text-emerald-400"></i>
+          <h2 class="text-sm font-bold text-white">Capturas de Campo</h2>
+        </div>
+        <button id="btnClearAllSnaps" class="text-xs text-slate-400 hover:text-red-400 transition font-medium flex items-center gap-1 disabled:opacity-30 cursor-pointer" disabled>
+          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          <span>Vaciar</span>
+        </button>
+      </div>
+
+      <!-- Aviso de ayuda para guardar en celular -->
+      <div id="saveHelpNotice" class="hidden bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-2 text-[11px] text-emerald-300 flex items-center gap-2">
+        <i data-lucide="info" class="w-4 h-4 shrink-0 text-emerald-400"></i>
+        <span>Toca cualquier foto o el botón <strong>Guardar / Compartir</strong> para enviarla a tu galería o WhatsApp.</span>
+      </div>
+
+      <div id="snapsFeed" class="max-h-72 overflow-y-auto custom-scroll space-y-2.5">
+        <div id="noSnapsPrompt" class="py-6 flex flex-col items-center justify-center text-center text-slate-500">
+          <div class="w-11 h-11 rounded-full bg-slate-800/80 flex items-center justify-center mb-2 text-slate-500">
+            <i data-lucide="camera-off" class="w-5 h-5"></i>
+          </div>
+          <p class="text-xs font-semibold text-slate-300">Sin capturas aún</p>
+          <p class="text-[11px] text-slate-400 mt-1 max-w-[240px]">
+            Toca "Foto Manual" para probar o espera a que un ave se acerque. Aparecerán aquí mismo.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- VISOR MODAL DE FOTO EN GRANDE (CON GUARDADO NATIVO PARA MÓVIL) -->
+  <div id="photoViewerModal" class="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md hidden items-center justify-center p-3">
+    <div class="relative max-w-lg w-full bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+      
+      <!-- Cabecera Modal -->
+      <div class="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+        <span id="modalPhotoDetails" class="text-xs font-bold text-emerald-400 truncate">Captura</span>
+        <button id="modalCloseButton" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Imagen a pantalla completa -->
+      <div class="p-2 bg-black flex flex-col items-center justify-center">
+        <img id="modalFullImage" src="" alt="Captura de Ave" class="max-h-[55vh] w-auto object-contain rounded-lg select-auto">
+      </div>
+
+      <!-- Botones de Compartir/Guardar -->
+      <div class="p-3.5 bg-slate-900 border-t border-slate-800 space-y-3">
+        <div class="bg-slate-800/90 border border-slate-700 rounded-xl p-2.5 text-center">
+          <p class="text-xs text-slate-200 font-medium">
+            📱 <strong>Truco infalible:</strong> También puedes <strong>mantener presionado el dedo sobre la foto de arriba</strong> y elegir <em>"Descargar imagen"</em>.
+          </p>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="btnShareNative" class="flex-1 py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg cursor-pointer">
+            <i data-lucide="share-2" class="w-4 h-4"></i>
+            <span>Compartir / Guardar en Celular</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CANVAS OCULTO PARA PROCESAR FOTO CON ZOOM -->
+  <canvas id="hiddenSnapshotCanvas" class="hidden"></canvas>
+
+  <script>
+    lucide.createIcons();
+
+    let aiNet = null;
+    let streamRef = null;
+    let isTracking = false;
+    let trapArmed = true;
+    let inCooldown = false;
+
+    let videoDevices = [];
+    let currentDeviceIndex = 0;
+    let currentZoom = 1.0;
+    let supportsHardwareZoom = false;
+
+    let thresholdConfidence = 0.60;
+    let thresholdAreaRatio = 0.01;
+    let cooldownDurationMs = 4000;
+    let enableSound = true;
+    let enableBoxes = true;
+    let enableStamp = true;
+
+    let capturesList = [];
+    let currentModalItem = null;
+    let fpsFrames = 0;
+    let fpsTimestamp = performance.now();
+
+    const video = document.getElementById('videoElement');
+    const hud = document.getElementById('hudCanvas');
+    const hudCtx = hud.getContext('2d');
+    const snapCanvas = document.getElementById('hiddenSnapshotCanvas');
+    const snapCtx = snapCanvas.getContext('2d');
+
+    const btnLaunch = document.getElementById('btnLaunch');
+    const btnLaunchText = document.getElementById('btnLaunchText');
+    const welcomeScreen = document.getElementById('welcomeScreen');
+
+    const btnTrapSwitch = document.getElementById('btnTrapSwitch');
+    const trapBtnLabel = document.getElementById('trapBtnLabel');
+    const btnSnapManual = document.getElementById('btnSnapManual');
+    const btnCameraFlip = document.getElementById('btnCameraFlip');
+
+    const activeLensIndicator = document.getElementById('activeLensIndicator');
+    const lens123Container = document.getElementById('lens123Container');
+    const sliderZoom = document.getElementById('sliderZoom');
+    const labelZoom = document.getElementById('labelZoom');
+
+    const flashEffect = document.getElementById('flashEffect');
+    const birdTargetAlert = document.getElementById('birdTargetAlert');
+    const cooldownBadge = document.getElementById('cooldownBadge');
+    const cooldownTimerText = document.getElementById('cooldownTimerText');
+    const totalSnapsText = document.getElementById('totalSnapsText');
+    const fpsText = document.getElementById('fpsText');
+
+    const snapsFeed = document.getElementById('snapsFeed');
+    const noSnapsPrompt = document.getElementById('noSnapsPrompt');
+    const saveHelpNotice = document.getElementById('saveHelpNotice');
+    const btnClearAllSnaps = document.getElementById('btnClearAllSnaps');
+
+    const photoViewerModal = document.getElementById('photoViewerModal');
+    const modalFullImage = document.getElementById('modalFullImage');
+    const modalPhotoDetails = document.getElementById('modalPhotoDetails');
+    const btnShareNative = document.getElementBy
